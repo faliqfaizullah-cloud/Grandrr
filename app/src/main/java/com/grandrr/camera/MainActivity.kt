@@ -59,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     private val sound = SoundEngine()
     private val prevL = FloatArray(EffectView.GW * EffectView.GH)
     private val outM = FloatArray(EffectView.GW * EffectView.GH)
+    private val lumaOut = FloatArray(EffectView.LW * EffectView.LH) { 0.5f }
 
     private val permLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         if (hasCamera()) startCamera() else toast("Camera permission is needed")
@@ -91,7 +92,7 @@ class MainActivity : AppCompatActivity() {
             scaleType = PreviewView.ScaleType.FILL_CENTER
         }
         importView = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP; visibility = View.GONE }
-        fx = EffectView(this).apply { onNote = { x, v -> sound.play(x, v) } }
+        fx = EffectView(this).apply { onNote = { x, v -> effects[idx].timbre?.let { sound.play(x, v, it) } } }
         flash = View(this).apply { setBackgroundColor(Color.WHITE); alpha = 0f }
         root.addView(previewView, -1, -1)
         root.addView(importView, -1, -1)
@@ -213,7 +214,7 @@ class MainActivity : AppCompatActivity() {
         fx.style = styleIdx
         val sb = StringBuilder()
         if (e.line1.isNotEmpty()) sb.append("◉  ").append(e.line1).append('\n')
-        if (e.sound) sb.append("♪  ")
+        if (e.sound && e.music) sb.append("♪  ")
         sb.append(e.line2.replace("%s", e.styles.getOrNull(styleIdx)?.lowercase() ?: ""))
         hint.text = sb.toString()
         buildPills()
@@ -291,15 +292,13 @@ class MainActivity : AppCompatActivity() {
         catch (e: Exception) { p.unbindAll(); p.bindToLifecycle(this, sel, pv, an); videoCapture = null }
     }
 
-    /** Frame-difference motion map (24x40 grid) in display orientation. */
+    /** Frame-difference motion map (24x40) and luma map (48x84) in display orientation. */
     private fun analyze(img: ImageProxy) {
         try {
             val pl = img.planes[0]; val buf = pl.buffer; val rs = pl.rowStride
             val w = img.width; val h = img.height; val rot = img.imageInfo.rotationDegrees
-            val gw = EffectView.GW; val gh = EffectView.GH
-            for (gy in 0 until gh) for (gx in 0 until gw) {
-                var u = (gx + 0.5f) / gw; val v = (gy + 0.5f) / gh
-                if (front) u = 1f - u
+            fun sample(u0: Float, v: Float): Float {
+                val u = if (front) 1f - u0 else u0
                 val sx: Float; val sy: Float
                 when (rot) {
                     0 -> { sx = u; sy = v }
@@ -307,12 +306,21 @@ class MainActivity : AppCompatActivity() {
                     180 -> { sx = 1f - u; sy = 1f - v }
                     else -> { sx = 1f - v; sy = u }
                 }
-                val l = (buf.get((sy * (h - 1)).toInt() * rs + (sx * (w - 1)).toInt()).toInt() and 0xFF).toFloat()
+                return (buf.get((sy * (h - 1)).toInt() * rs + (sx * (w - 1)).toInt()).toInt() and 0xFF).toFloat()
+            }
+            val gw = EffectView.GW; val gh = EffectView.GH
+            for (gy in 0 until gh) for (gx in 0 until gw) {
+                val l = sample((gx + 0.5f) / gw, (gy + 0.5f) / gh)
                 val i = gy * gw + gx
                 val d = abs(l - prevL[i]); prevL[i] = l
                 outM[i] = max(((d - 7f) / 35f).coerceIn(0f, 1f), outM[i] * 0.75f)
             }
-            if (!imported) fx.feed(outM)
+            val lw = EffectView.LW; val lh = EffectView.LH
+            for (ly in 0 until lh) for (lx in 0 until lw) {
+                val i = ly * lw + lx
+                lumaOut[i] = lumaOut[i] * 0.6f + 0.4f * sample((lx + 0.5f) / lw, (ly + 0.5f) / lh) / 255f
+            }
+            if (!imported) { fx.feed(outM); fx.feedLuma(lumaOut) }
         } finally { img.close() }
     }
 

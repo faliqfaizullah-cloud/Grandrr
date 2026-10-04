@@ -10,6 +10,7 @@ Dapple (Palm / Leaves / Fern / Branch) · Strings (Harp / Curtain / Reeds / Blin
 - White dot = photo (effect baked in) · Red = record video · Green speaker = sound on/off
 - Gallery button imports a photo; touch it to stir the effect
 - Front/back camera, haptics, settings
+- Sound: piano, glockenspiel, pads, plucked strings and electric crackle (Tesla), with a light reverb
 
 ## Build
 Push to GitHub, then tag a release — Actions builds and attaches `Grandrr.apk`:
