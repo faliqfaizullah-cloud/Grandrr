@@ -10,13 +10,13 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.view.*
+import java.io.File
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.video.*
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -53,8 +53,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var carC: TextView
     private lateinit var carR: TextView
 
-    private var videoCapture: VideoCapture<Recorder>? = null
-    private var recording: Recording? = null
+    private var fxRec: FxRecorder? = null
+    private val frameCb = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            val r = fxRec ?: return
+            r.frame(System.nanoTime())
+            Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
     private val analysisExec = Executors.newSingleThreadExecutor()
     private val sound = SoundEngine()
     private val prevL = FloatArray(EffectView.GW * EffectView.GH)
@@ -283,13 +289,9 @@ class MainActivity : AppCompatActivity() {
         val pv = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
         val an = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
             .also { it.setAnalyzer(analysisExec) { img -> analyze(img) } }
-        val rec = Recorder.Builder()
-            .setQualitySelector(QualitySelector.from(Quality.HD, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD))).build()
-        val vc = VideoCapture.withOutput(rec)
         val sel = if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
         p.unbindAll()
-        try { p.bindToLifecycle(this, sel, pv, vc, an); videoCapture = vc }
-        catch (e: Exception) { p.unbindAll(); p.bindToLifecycle(this, sel, pv, an); videoCapture = null }
+        p.bindToLifecycle(this, sel, pv, an)
     }
 
     /** Frame-difference motion map (24x40) and luma map (48x84) in display orientation. */
@@ -355,27 +357,49 @@ class MainActivity : AppCompatActivity() {
         toast("Saved to Pictures/Grandrr")
     }
 
+    /** Records camera + effect together, so the filter is part of the saved video. */
     private fun toggleRecord() {
-        val r = recording
-        if (r != null) { r.stop(); recording = null; recBtn.recording = false; return }
-        val vc = videoCapture ?: run { toast("Video isn't supported with this camera setup"); return }
-        val cv = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, "Grandrr_${stamp()}.mp4")
-            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-            if (Build.VERSION.SDK_INT >= 29) put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Grandrr")
+        val running = fxRec
+        if (running != null) {
+            running.stop(); fxRec = null; recBtn.recording = false
+            toast("Saving video…")
+            return
         }
-        val opts = MediaStoreOutputOptions.Builder(contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
-            .setContentValues(cv).build()
-        var pending = vc.output.prepareRecording(this, opts)
-        if (hasMic()) pending = pending.withAudioEnabled()
-        recording = pending.start(ContextCompat.getMainExecutor(this)) { ev ->
-            if (ev is VideoRecordEvent.Finalize) {
-                recBtn.recording = false; recording = null
-                toast(if (ev.hasError()) "Recording failed" else "Saved to Movies/Grandrr")
-            }
-        }
+        val w = root.width; val h = root.height
+        if (w == 0 || h == 0) return
+        val encW = 720
+        val encH = ((encW.toFloat() * h / w) / 16f).toInt() * 16
+        val tmp = File(cacheDir, "rec_${stamp()}.mp4")
+        val rec = FxRecorder(encW, encH, w, h, hasMic(), tmp,
+            drawFrame = { c ->
+                if (imported) importView.draw(c) else previewView.draw(c)
+                fx.draw(c)
+            },
+            onFinished = { ok -> runOnUiThread { if (ok) saveVideo(tmp) else { tmp.delete(); toast("Recording failed") } } })
+        if (!rec.start()) { toast("This device can't record video with effects"); return }
+        fxRec = rec
         recBtn.recording = true
+        Choreographer.getInstance().postFrameCallback(frameCb)
+        root.postDelayed({ if (fxRec === rec) toggleRecord() }, 60_000)
     }
 
-    override fun onDestroy() { super.onDestroy(); recording?.stop(); analysisExec.shutdown() }
+    private fun saveVideo(file: File) {
+        Thread {
+            try {
+                val cv = ContentValues().apply {
+                    put(MediaStore.Video.Media.DISPLAY_NAME, "Grandrr_${stamp()}.mp4")
+                    put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                    if (Build.VERSION.SDK_INT >= 29) put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Grandrr")
+                }
+                val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cv)
+                if (uri == null) { runOnUiThread { toast("Save failed") }; return@Thread }
+                contentResolver.openOutputStream(uri)?.use { o -> file.inputStream().use { it.copyTo(o) } }
+                runOnUiThread { toast("Saved to Movies/Grandrr (with effect)") }
+            } catch (e: Exception) {
+                runOnUiThread { toast("Save failed") }
+            } finally { file.delete() }
+        }.start()
+    }
+
+    override fun onDestroy() { super.onDestroy(); fxRec?.stop(); fxRec = null; analysisExec.shutdown() }
 }

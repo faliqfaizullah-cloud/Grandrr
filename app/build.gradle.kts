@@ -10,8 +10,8 @@ android {
         applicationId = "com.grandrr.camera"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
     buildTypes {
         release {
@@ -35,5 +35,4 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$camerax")
     implementation("androidx.camera:camera-lifecycle:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
-    implementation("androidx.camera:camera-video:$camerax")
 }
